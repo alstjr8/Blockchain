@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, make_response
+from flask import Flask, render_template, request, jsonify, make_response, send_file
 import hashlib
 import time
 import csv
@@ -28,7 +28,7 @@ PORT_NUMBER = 8666
 g_bcFileName = "blockchain.csv"
 g_nodelstFileName = "nodelst.csv"
 g_receiveNewBlock = "/node/receiveNewBlock"
-g_difficulty = 5
+g_difficulty = 4
 g_maximumTry = 100
 g_nodeList = {'trustedServerAddress': '8666'}  # trusted server list, should be checked manually
 g_databaseURL = "postgresql://postgres:postgres@localhost:5432/postgres"
@@ -79,12 +79,18 @@ class Blockchain:
             return
 
 
-    def toJSON(self):
+    def toJSON(self, index_from=0, index_to=-1):
         data = []
         block = {}
-        for i in range(0, len(self.blockChain)):
+
+        if index_to == -1:
+            index_to = len(self.blockChain)
+        elif index_to > len(self.blockChain):
+            index_to = len(self.blockChain)
+
+        for i in range(index_from, index_to):
             block['index'] = str(self.blockChain.loc[[i]].index[0])
-            for j in range(0, 5):
+            for j in range(0, len(self.blockColumns)):
                 block[self.blockChain.columns[j]] = str(self.blockChain.loc[i][j])
             data.append(block)
             block = {}
@@ -146,8 +152,6 @@ class txDataList:
         self.txColumns = ['commityn', 'sender', 'amount', 'receiver', 'fee', 'uuid', 'tx_data', 'signature']
         self.txDataFrame = pd.DataFrame([], columns=self.txColumns)
 
-    def toList(self):
-        return self.txDataFrame.values.tolist()
 
     def addTxData(self, txList):
         txdataframe = pd.DataFrame(txList, columns=self.txColumns)
@@ -167,6 +171,54 @@ class txDataList:
         else:
             print('txData written to database')
             return
+
+class NodeLst:
+    def __init__(self):
+        self.nodeColumns = ['ip', 'port', 'tmp'] # tmp: 시도 횟수
+        self.nodeDataFrame = pd.DataFrame([], columns=self.nodeColumns)
+
+    def addNode(self, ip, port):
+        self.nodeDataFrame = self.nodeDataFrame.append(pd.DataFrame([[ip, port, 0]], columns=self.nodeColumns))
+        self.nodeDataFrame = self.nodeDataFrame.drop_duplicates(['ip', 'port'])
+        self.nodeDataFrame.reset_index(inplace=True, drop=True)
+
+    def writeNodes(self):
+        try:
+            engine_postgre = create_engine(g_databaseURL)
+            for i in range(0, len(self.nodeDataFrame)):
+                try:
+                    self.nodeDataFrame.loc[[i]].to_sql(name="bc_node_lst", con=engine_postgre, index=False,
+                                                if_exists="append")
+                except:
+                    pass
+            engine_postgre.dispose()
+            print("new node written to DB")
+        except:
+            raise MyException("database connection failed")
+
+
+    def readNodes(self):
+        print("read Nodes")
+
+        try:
+            engine_postgre = create_engine(g_databaseURL)
+            query_node = "select * from bc_node_lst"
+            self.nodeDataFrame = pd.read_sql_query(query_node, con=engine_postgre)
+            print("Pulling nodeData from DB...")
+        except:
+            raise MyException("database connection failed")
+
+    def toJSON(self):
+        data = []
+        node = {}
+        for i in range(0, len(self.nodeDataFrame)):
+            for j in range(0, len(self.nodeColumns)):
+                node[self.nodeDataFrame.columns[j]] = str(self.nodeDataFrame.loc[i][j])
+            data.append(node)
+            node = {}
+        return data
+
+
 
 class MyException(Exception):
     def __init__(self, msg):
@@ -191,10 +243,10 @@ def calculateHash(index, previousHash, timestamp, data, proof):
     value = str(index) + str(previousHash) + str(timestamp) + str(data) + str(proof)
     sha = hashlib.sha256(value.encode('utf-8'))
     return str(sha.hexdigest())
-
-
-def calculateHashForBlock(block):
-    return calculateHash(block.index, block.previousHash, block.timestamp, block.data, block.proof)
+#
+#
+# def calculateHashForBlock(block):
+#     return calculateHash(block.index, block.previousHash, block.timestamp, block.data, block.proof)
 
 
 def getTxData(miner):
@@ -278,6 +330,58 @@ def mineNewBlock(blockchain, strTxData, uuidToUpdate, difficulty=g_difficulty):
         print(error)
 
 
+def newtx(txToMining):
+    newTxData = txDataList()
+
+    try:
+        sender_prvKeyString = request.form['sender'].replace('-----BEGIN RSA PRIVATE KEY-----', '').replace(
+            '-----END RSA PRIVATE KEY-----', '').replace('\n', '')
+        sender_pubKey = RSA.importKey(b64decode(sender_prvKeyString)).publickey()
+        sender_pubKeyString = b64encode(sender_pubKey.exportKey('DER')).decode('utf-8')
+    except ValueError:
+        raise MyException("declined : key is not valid")
+
+    try:
+        validateTx(txToMining)
+    except Exception:
+        raise
+    else:
+        tx = [[0, sender_pubKeyString, float(txToMining['amount']), txToMining['receiver'], float(txToMining['fee']),
+               txToMining['uuid']]]
+        tx[0].append(
+            txToMining['uuid'] + ", " + sender_pubKeyString + ", " + str(txToMining['amount']) + ", " + txToMining[
+                'receiver'] + ", " + str(txToMining['fee']) + " |")
+        tx[0].append(txToMining['signature'])
+        newTxData.addTxData(tx)
+
+    try:
+        newTxData.writeTx()
+    except Exception:
+        raise
+
+
+def validateTx(txToMining):
+    try:
+        publicKey = RSA.importKey(b64decode(txToMining['sender']))  # sender 는 공개키(string), 문자열을 공개키 객체로 바꾸는중
+        RSA.importKey(b64decode(txToMining['receiver']))  # 받는사람 주소가 유효한 공개키가 아닐시 except 로 처리
+    except ValueError:
+        raise MyException("declined : key is not valid")
+
+    try:
+        tx = str(txToMining['sender']) + str(txToMining['receiver']) + "%f" % float(
+            txToMining['amount']) + "%f" % float(txToMining['fee']) + str(txToMining['uuid'])
+        tx = tx.replace("\n", "")
+        if ", " in tx or "| " in tx:  # 블록 txData split 할 때 쓸거라서 여기 있으면 안됨
+            raise MyException("declined : , or | included")
+        txHash = hashlib.sha256(tx.encode('utf-8')).digest()  # 보낼 때 sign 한 문자열의 해쉬값
+        if not publicKey.verify(txHash, (int(txToMining['signature']),)):  # 보낸사람의 public key 로 검증
+            raise MyException("declined : sign does not match") # verify 가 false 일 시 오류발생
+    except ValueError:
+        raise MyException("declined : not a number") # 형변환 실패시 오류발생
+    except Exception:
+        raise MyException("declined : validation failed")
+
+
 def isSameBlock(block1, block2):
     if str(block1.index) != str(block2.index):
         return False
@@ -310,56 +414,6 @@ def isValidNewBlock(newBlock, previousBlock):
     return True
 
 
-def validateTx(txToMining):
-    try:
-        publicKey = RSA.importKey(b64decode(txToMining['sender']))  # sender 는 공개키(string), 문자열을 공개키 객체로 바꾸는중
-        RSA.importKey(b64decode(txToMining['receiver']))  # 받는사람 주소가 유효한 공개키가 아닐시 except 로 처리
-    except ValueError:
-        raise MyException("declined : key is not valid")
-
-    try:
-        tx = str(txToMining['sender']) + str(txToMining['receiver']) + "%f" % float(
-            txToMining['amount']) + "%f" % float(txToMining['fee']) + str(txToMining['uuid'])
-        tx = tx.replace("\n", "")
-        if ", " in tx or "| " in tx:  # 블록 txData split 할 때 쓸거라서 여기 있으면 안됨
-            raise
-        txHash = hashlib.sha256(tx.encode('utf-8')).digest()  # 보낼 때 sign 한 문자열의 해쉬값
-        if not publicKey.verify(txHash, (int(txToMining['signature']),)):  # 보낸사람의 public key 로 검증
-            raise MyException("declined : sign does not match") # verify 가 false 일 시 오류발생
-    except ValueError:
-        raise MyException("declined : amount or fee is not a number") # 형변환 실패시 오류발생
-    except Exception:
-        raise MyException("declined : validation failed")
-
-
-def newtx(txToMining):
-    newTxData = txDataList()
-
-    try:
-        sender_prvKeyString = request.form['sender'].replace('-----BEGIN RSA PRIVATE KEY-----', '').replace(
-            '-----END RSA PRIVATE KEY-----', '').replace('\n', '')
-        sender_pubKey = RSA.importKey(b64decode(sender_prvKeyString)).publickey()
-        sender_pubKeyString = b64encode(sender_pubKey.exportKey('DER')).decode('utf-8')
-    except ValueError:
-        raise MyException("declined : key is not valid")
-
-    try:
-        validateTx(txToMining)
-    except Exception:
-        raise
-    else:
-        tx = [[0, sender_pubKeyString, float(txToMining['amount']), txToMining['receiver'], float(txToMining['fee']),
-               txToMining['uuid']]]
-        tx[0].append(
-            txToMining['uuid'] + ", " + sender_pubKeyString + ", " + str(txToMining['amount']) + ", " + txToMining[
-                'receiver'] + ", " + str(txToMining['fee']) + " |")
-        tx[0].append(txToMining['signature'])
-        newTxData.addTxData(tx)
-
-    try:
-        newTxData.writeTx()
-    except Exception:
-        raise
 
 
 def isValidChain(bcToValidate):
@@ -555,7 +609,7 @@ def compareMerge(bcDict):
             strTxData, uuidToUpdate = getTxData()
             heldBlockchain.writeBlockchain(uuidToUpdate)
 
-            for line in tempDict:    
+            for line in tempDict:
                 heldBlockchain.addBlock([[line['previous_hash'], line['time_stamp'], line['tx_data'], line['current_hash'],
                       line['proof']])
             #db에 block 정보 넣기
@@ -563,7 +617,7 @@ def compareMerge(bcDict):
         except:
             print("database error")
 
-            
+
 @app.route('/main')
 def main_route():
     return render_template('main.html')
@@ -662,6 +716,9 @@ def getBlockData_route():
     data = ""  # response json data
     blockchain = Blockchain()
 
+    index_from = int(request.args.get('from'))
+    index_to = int(request.args.get('to'))
+
     try:
         blockchain.readBlockchain()
     except MyException as error:
@@ -671,7 +728,7 @@ def getBlockData_route():
         print(str(error))
         data = "Internal Server Error"
     else:
-        data = blockchain.toJSON()
+        data = blockchain.toJSON(index_from, index_to)
     finally:
         resp = make_response(jsonify(data))
         return resp
@@ -764,5 +821,246 @@ def checkBalance_route():
         return resp
 
 
+@app.route('/node/addNode')
+def addNode_route():
+    data = {}
+    nodeLst = NodeLst()
+    userip = request.args.get('ip')
+    userport = request.args.get('port')
+    realip=request.environ['REMOTE_ADDR']
+
+    if request.environ['REMOTE_ADDR'] != userip:
+        data['msg'] = "your ip address doesn't match with the requested parameter"
+        resp = make_response(data)
+        return resp
+    else:
+        try:
+            nodeLst.readNodes()
+            nodeLst.addNode(userip, userport)
+            nodeLst.writeNodes()
+        except MyException as error:
+            data['msg'] = str(error)
+        else:
+            data['msg'] = "node added successfully"
+        finally:
+            resp = make_response(data)
+            return resp
+
+
+@app.route('/node/getNode')
+def getNode_route():
+    data = {}
+    nodeLst = NodeLst()
+
+    try:
+        nodeLst.readNodes()
+    except MyException as error:
+        data['msg'] = str(error)
+    else:
+        data = nodeLst.toJSON()
+    finally:
+        resp = make_response(jsonify(data))
+        return resp
+
+
+@app.route('/info/')
+def info_route():
+    return render_template('info.html')
+
+@app.route('/info/image')
+def info_image_route():
+    if request.args.get('i') == "b1":
+        return send_file('./templates/addblock.png')
+    elif request.args.get('i') == "b2":
+        return send_file('./templates/getlatestblock.PNG')
+    elif request.args.get('i') == "b3":
+        return send_file('./templates/generategenesisblock.PNG')
+    elif request.args.get('i') == "b4":
+        return send_file('./templates/readblockchain.PNG')
+    elif request.args.get('i') == "b5":
+        return send_file('./templates/tojson.PNG')
+    elif request.args.get('i') == "b6":
+        return send_file('./templates/writeblockchain.PNG')
+    elif request.args.get('i') == "b7":
+        return send_file('./templates/checkbalance.PNG')
+    elif request.args.get('i') == "t1":
+        return send_file('./templates/addtxdata.PNG')
+    elif request.args.get('i') == "t2":
+        return send_file('./templates/writetx.PNG')
+    elif request.args.get('i') == "n1":
+        return send_file('./templates/addnode.PNG')
+    elif request.args.get('i') == "n2":
+        return send_file('./templates/writenodes.PNG')
+    elif request.args.get('i') == "n3":
+        return send_file('./templates/readnodes.PNG')
+    elif request.args.get('i') == "n4":
+        return send_file('./templates/tojson_t.PNG')
+    elif request.args.get('i') == "a1":
+        return send_file('./templates/signtx.PNG')
+    elif request.args.get('i') == "a2":
+        return send_file('./templates/calculatehash.PNG')
+    elif request.args.get('i') == "a3":
+        return send_file('./templates/gettxdata.PNG')
+    elif request.args.get('i') == "a4":
+        return send_file('./templates/mine.PNG')
+    elif request.args.get('i') == "a5":
+        return send_file('./templates/minenewblock.PNG')
+    elif request.args.get('i') == "a6":
+        return send_file('./templates/newtx.PNG')
+    elif request.args.get('i') == "a7":
+        return send_file('./templates/validatetx.PNG')
+    elif request.args.get('i') == "c1":
+        return send_file('./templates/blockchainclass.png')
+    elif request.args.get('i') == "c2":
+        return send_file('./templates/txclass.png')
+    elif request.args.get('i') == "c3":
+        return send_file('./templates/nodeclass.png')
+
+
+
+@app.route('/info/text')
+def info_text_route():
+    if request.args.get('i') == "b1":
+        return "Blockchain 클래스의 변수 self.blockchain 에 블록(행) 을 추가하는 함수입니다.<br>" \
+               "mineNewBlock 에서 새 블록을 채굴한 후 미리 readBlockChain 해 놓은 기존 블록체인에 추가할 때 사용합니다.<br>" \
+               "인자 block은 블록 하나의 데이터를 가지고 있는 이중배열입니다. block을 데이터프레임으로 만들고, self.blockchain 에 append 시켜줍니다."
+    elif request.args.get('i') == "b2":
+        return "Blockchain 클래스의 변수 self.blockchain 의 마지막 행을 반환하는 함수입니다.<br>" \
+               "mineNewBlock 함수에서 블록을 채굴할 때 전 블록의 해쉬, 인덱스를 가져올 때 사용합니다."
+    elif request.args.get('i') == "b3":
+        return "제네시스 블록을 생성하고 Blockchain 클래스의 변수 self.blockchain 에 넣는 함수입니다.<br>" \
+               " mine 에서 readBlockChain 을 시도했는데 블록이 하나도 없을 경우 호출됩니다.<br>" \
+               "블록이 이미 존재하는 경우 에러를 raise 합니다."
+    elif request.args.get('i') == "b4":
+        return "데이터베이스에서 블록체인 전체를 가져와서 Blockchain 클래스의 변수 self.blockchain에 저장하는 함수입니다.<br>" \
+               "블록체인 데이터가 필요한 경우마다 호출했기 때문에 많이 사용한 함수입니다.<br>" \
+               "데이터베이스 엔진 생성에 실패한 경우 데이터베이스 접속 에러메시지를 raise 합니다. 데이터베이스에서 읽어왔으나 블록이 없는 경우에도 에러를 raise 합니다.<br>" \
+               "블록이 없다는 에러메시지('No Block Exists')는 mine 함수의 except가 잡아서 generateGenesisBlock을 호출하는 데도 사용합니다."
+    elif request.args.get('i') == "b5":
+        return "Blockchain 클래스의 변수 self.blockchain 을 JSON [{...},{...},{...},{...}] 형태로 반환하는 합수입니다.<br>" \
+               "인자로 index_from, index_to 를 받고, 인자의 초기값은 0, -1 입니다.<br>" \
+               "index_to 가 -1 (아무것도 입력안할 시 초기값) 또는 블록체인의 길이보다 클 경우는 index_to 를 블록체인의 길이로 설정해줍니다.<br>" \
+               "index_to에서 index_from 까지 for문을 돌면서 각 행을 dictionary로 만들고 그 dictionary를 배열에 담습니다. 결과는 배열 안에 딕셔너리가 담긴 JSON이 됩니다.<br>" \
+               "response 를 줄 때 dataframe 자료형으로 줄 수 없으므로, JSON 으로 예쁘게 파싱하기 위한 함수입니다."
+    elif request.args.get('i') == "b6":
+        return "Blockchain 클래스의 변수 self.blockchain 의 데이터를 데이터베이스에 쓰기 위한 함수입니다.<br>" \
+               "self.blockchain 전체를 한 번에 데이터베이스에 쓰려고 시도할 경우 한 행이라도 유효하지 않으면 전체가 실패하므로, 한 행씩 떼서 for문을 돌면서 데이터베이스 쓰기를 시도합니다.<br>" \
+               "인자로는 uuidToUpdate를 받습니다. uuidToUpdate는 채굴된 블록에 포함된 트랜잭션들의 uuid값을 담고있는 배열입니다.<br>" \
+               "uuidToUpdate가 가지고 있는 uuid에 해당하는 트랜잭션들은 블록에 포함된 것이므로, commityn 값을 1로 업데이트 해 줍니다.<br>" \
+               "데이터베이스 엔진 생성에 실패한 경우 데이터베이스 접속 에러메시지를 raise 합니다."
+    elif request.args.get('i') == "b7":
+        return "지갑 주소에 잔액이 얼마나 남아있는지를 계산해서 반환하는 함수입니다.<br>" \
+               "인자로 target을 받는데, 지갑 주소(공개키) 정보를 담고 있는 string 입니다.<br>" \
+               "이 함수를 호출하기 전 readBlockChain을 호출했으므로 self.blockchain에는 블록체인 전체 데이터가 저장되어 있습니다.<br>" \
+               "블록체인의 txData를 추출하고 파싱해서 sender, receiver, amount, fee 를 찾아냅니다. 그리고 target에 대해 계산합니다.<br>" \
+               "sender == target일 경우 마이너스, receiver == target일 경우 플러스가 됩니다. 계산이 완료되면 최종 잔액을 반환합니다."
+    elif request.args.get('i') == "t1":
+        return "txDataList 클래스의 변수 self.txDataFrame 에 값을 넣어주는 함수입니다.<br>" \
+               "인자 txList를 받아서 데이터프레임으로 만들고 self.txDataFrame에 대입해줍니다.<br>" \
+               "Setter 역할을 하는 함수라고 할 수 있습니다."
+    elif request.args.get('i') == "t2":
+        return "txDataList 클래스의 변수 self.txDataFrame 의 값을 데이터베이스에 쓰기 위한 함수입니다.<br>" \
+               "데이터베이스 엔진을 열고, self.txDataFrame 의 값을 데이터베이스로 쓰기를 시도합니다.<br>" \
+               "실패할 경우 데이터베이스 쓰기 오류를 raise 합니다."
+    elif request.args.get('i') == "n1":
+        return "NodeLst 클래스의 변수 self.nodeDataFrame 에 노드(행) 을 추가하는 함수입니다.<br>" \
+               "새 노드를 받아서 새 노드의 ip, port 를 인자로 전달하면서 addNode를 호출하게 됩니다.<br>" \
+               "일단 self.nodeDataFrame에 추가한 후 drop_duplicates를 해주면 중복 노드를 제거할 수 있습니다."
+    elif request.args.get('i') == "n2":
+        return "NodeLst 클래스의 변수 self.nodeDataFrame 의 값을 데이터베이스에 쓰기 위한 함수입니다.<br>" \
+               "데이터베이스 엔진을 열고, self.nodeDataFrame 의 값을 데이터베이스로 쓰기를 시도합니다.<br>" \
+               "실패할 경우 데이터베이스 쓰기 오류를 raise 합니다."
+    elif request.args.get('i') == "n3":
+        return "데이터베이스에서 노드 데이터를 가져와 self.nodeDataFrame에 담기 위한 함수입니다.<br>" \
+               "데이터베이스 엔진을 열고, 데이터베이스에서 데이터를 가져오려고 시도합니다.<br>" \
+               "실패할 경우 데이터베이스 오류를 raise 합니다."
+    elif request.args.get('i') == "n4":
+        return "NodeLst 클래스의 변수 self.nodeDataFrame 을 JSON [{...},{...},{...},{...}] 형태로 반환하는 합수입니다.<br>" \
+               "for문을 돌면서 각 행을 dictionary로 만들고 그 dictionary를 배열에 담습니다. 결과는 배열 안에 딕셔너리가 담긴 JSON이 됩니다.<br>" \
+               "response 를 줄 때 dataframe 자료형으로 줄 수 없으므로, JSON 으로 예쁘게 파싱하기 위한 함수입니다."
+    elif request.args.get('i') == "a1":
+        return "트랜잭션 데이터를 sign 해서 sign데이터를 반환해주는 함수입니다.<br>" \
+               "트랜잭션 데이터는 보내는사람의 개인키, 받는사람의 공개키, amount, fee, uuid 가 있습니다<br>" \
+               "개인키 string은 importKey를 통해 개인키 객체로 만들고, 트랜잭션 데이터들은 하나의 string으로 합쳐줍니다.<br>" \
+               "하나로 합쳐진 트랜잭션 데이터 string을 sha256으로 해쉬한 해쉬값을 개인키 객체로 sign 합니다.<br>" \
+               "만약 키가 유효하지 않다면 에러를 raise 합니다."
+    elif request.args.get('i') == "a2":
+        return "블록의 각 요소들을 인자로 받아서 블록의 해쉬값을 계산해 반환하는 함수입니다.<br>" \
+               "각 요소를 하나의 문자열로 합치고, 그 문자열을 sha256으로 해쉬한 후 그 값을 반환합니다."
+    elif request.args.get('i') == "a3":
+        return "블록을 채굴할 때, 새 블록에 포함될 트랜잭션을 가져오는 함수입니다.<br>" \
+               "우선 데이터베이스에 접속하여 트랜잭션 데이터를 달라는 쿼리를 요청합니다.<br>" \
+               "쿼리의 내용은 commityn 이 0이고, fee(수수료) 순으로 정렬된 uuid, tx_data 컬럼을 최대 5개만 달라는 것입니다.<br>" \
+               "채굴자에게 줄 보상은 기본 100 + 트랜잭션에 있는 모든 fee 를 합친 값입니다. 이 보상 트랜잭션을 가장 앞에 추가합니다.<br>" \
+               "그리고 블록에 포함될 나머지 트랜잭션들을 뒤에 붙여서 하나의 문자열로 만들어줍니다.<br>" \
+               "하나로 된 트랜잭션 데이터 문자열과, uuid 컬럼값을 담은 배열 두 개를 반환해줍니다."
+    elif request.args.get('i') == "a4":
+        return "mine 함수는 블록을 채굴할 준비를 하는 함수입니다. 기존에는 mine부터 쓰레드로 돌았지만, mine 대신 mineNewBlock을 쓰레드로 돌리기로 했습니다.<br>" \
+               "왜냐하면 mine이 쓰레드로 돌면 오류가 나도 응답을 줄 수 없기 때문이고, 시간이 별로 걸리지 않는 작업이므로 쓰레드로 돌릴 이유가 없습니다.<br>" \
+               "mine은 getTxData, readBlockchain, generateGenesisBlock 등을 호출하고 만약 오류가 난다면 잡아서 raise 해줍니다.<br>" \
+               "채굴에 필요한 정보가 모두 모였다면, 그 정보들을 mineNewBlock에 넘겨주면서 mineNewBlock을 쓰레드로 실행합니다."
+    elif request.args.get('i') == "a5":
+        return "mineNewBlock은 실제로 블록을 채굴하는 함수입니다. 시간이 오래 걸리므로 쓰레드로 호출됩니다.<br>" \
+               "우선 인자로 넘겨받은 blockchain 객체로부터 새 블록에 들어갈 요소들을 추출하고, timestamp, proof 도 설정해줍니다.<br>" \
+               "모두 준비되었다면 while문을 돌면서 difficulty에 맞는 hash가 나올때까지 proof를 늘리면서 해쉬연산을 수행합니다.<br>" \
+               "만약 difficulty를 만족하는 해쉬를 찾았다면, blockchain 객체에 addBlock을 한 후 writeBlockcahin으로 데이터베이스에 기록합니다.<br>" \
+               "만약 writeBlockchain 등에서 에러가 발생하면 에러메시지를 raise 해 줍니다."
+    elif request.args.get('i') == "a6":
+        return "새로운 트랜잭션 요청이 들어왔을 때, JSON으로 된 트랜잭션 요청을 적절하게 가공하고 검사해서 데이터베이스에 쓰는 함수입니다.<br>" \
+               "우선 보내는사람, 받는사람의 키가 유효한지 검사합니다. 또 validateTx를 호출하여 sign이 유효한지 검사합니다.<br>" \
+               "트랜잭션이 유효하다면 트랜잭션 데이터를 가공하여 문자열로 만들고, tx_data(블록에 들어갈 데이터와 동일)에 넣어줍니다.<br>" \
+               "데이터들을 모아서 addTxData, writeTx 를 호출해서 데이터베이스에 기록합니다.<br>" \
+               "실행 중 오류가 발생할 경우 오류메시지를 raise 해 줍니다."
+    elif request.args.get('i') == "a7":
+        return "트랜잭션 데이터가 유효한지 검사하는 함수입니다.<br>" \
+               "키가 유효한지, 특수문자(, |)가 들어가있는지, sign 이 유효한지 등을 검사합니다.<br>" \
+               "만약 에러가 발생한다면 그에 맞는 에러메시지를 raise 해 줍니다."
+    else:
+        return "설명설명"
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
+    nodeLst = NodeLst()
+
+    try:
+        nodeLst.readNodes()
+    except MyException as error:
+        print(error)
+    if not nodeLst.toJSON():
+        # get nodes...
+        for key, value in iter(g_nodeList.items()):
+            URL = 'http://' + key + ':' + value + '/node/getNode'
+            try:
+                res = requests.get(URL)
+            except requests.exceptions.ConnectionError:
+                continue
+            if res.status_code == 200:
+                # json.loads는 string, bytes, bytearray -> dict 형변환
+                tmpNodeLists = json.loads(res.text)
+                for ip, port in iter(tmpNodeLists.items()):
+                    nodeLst.addNode(ip, port, 0)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

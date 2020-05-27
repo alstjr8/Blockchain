@@ -3,32 +3,51 @@
   <head>
     <script src="http://code.jquery.com/jquery-latest.min.js"></script>
     <meta charset="utf-8">
-    <title></title>
+    <title>blockchain 4조</title>
+    <style>
+      .blockchain {margin:20px; table-layout:fixed;}
+      .blockchain .c1 {width:auto;}
+      .blockchain .c2 {width:150px;}
+      .blockchain .c3 {width:150px;}
+      .blockchain .c4 {width:150px;}
+      .blockchain .c5 {width:auto;}
+      .blockchain .c6 {width:auto;}
+      .blockchain th,
+      .blockchain td {padding:10px; line-height:1.5; border:2px solid black; }
+    </style>
   </head>
   <body>
+    보내는 사람의 개인키 입력 <br>
     <textarea id="private_key_sender" placeholder="개인키" rows="13" cols="65"></textarea>
     <input type="button" id="prvKeygenBtn" value="개인키 랜덤생성"> <br>
-    보내는 사람의 개인키 입력 <br><br>
+    <br><br>
+    받는 사람의 공개키 입력<br>
     <textarea id="public_key_receiver" placeholder="공개키" rows="4" cols="65"></textarea>
     <input type="button" id="pubKeygenBtn" value="공개키 랜덤생성"> <br>
-    받는 사람의 공개키 입력 <br><br>
+    <br><br>
     <input type="number" id="amount" placeholder="보낼 금액" style="width:485px">보낼 금액<br>
     <input type="number" id="fee" placeholder="수수료" style="width:485px">수수료<br><br>
     uuid : <span id="span_uuid"></span><br>
     <textarea id="signature" placeholder="사인" rows="5" cols="65"></textarea>
     <input type="button" id="signBtn" value="사인">
-    <input type="button" id="validateBtn" value="사인 확인"> <br>
+    <input type="button" id="validateBtn" value="사인 검증">
+    <a href="/info/">함수 정보 보러가기</a><br>
 
-    <input type="button" id="getBlockDataBtn" value="getBlockData">
+
     <input type="button" id="generateBlockBtn" value="generateBlock">
     <input type="button" id="newTxBtn" value="newTx">
     <input type="button" id="checkBalanceBtn" value="잔액 확인">
     <br>
+    <input type="number" id="index_from" placeholder="from">
+    <input type="number" id="index_to" placeholder="to">
+    <input type="button" id="getBlockDataBtn" value="getBlockData"><br>
     <span id = "output_area"></span>
 
   </body>
   <script>
   console.log(location.href)
+
+
 
     $("#signBtn").click(function(){
 
@@ -84,42 +103,67 @@
 
 
     $("#getBlockDataBtn").click(function(){
+      var from_index = $("#index_from").val()
+      var to_index = $("#index_to").val()
+
+      if(!$.isNumeric(from_index)){
+        if(from_index=="" && to_index==""){
+          from_index = 0
+          to_index=-2
+        } else{
+          $("#output_area").html("from_index is not a number")
+          return
+        }
+      } else if(!$.isNumeric(to_index)){
+        if(from_index=="" && to_index==""){
+          from_index = 0
+          to_index=-2
+        } else{
+          $("#output_area").html("to_index is not a number")
+          return
+        }
+      } else if(Number(to_index) < 0 ){
+        $("#output_area").html("to_index can not be lower than 0")
+        return
+      } else if(Number(from_index) < 0 ){
+        $("#output_area").html("from_index can not be lower than 0")
+        return
+      } else if(Number(from_index) > Number(to_index)){
+        $("#output_area").html("to_index can not be lower than from_index")
+        return
+      }
 
       $.ajax({
         url:"/block/getBlockData",
         dataType:"json",
         type:'GET',
+        data:{
+          "from":Number(from_index),
+          "to":Number(to_index)+1
+        },
         success:function(response){
           console.log(response)
-
           $("#output_area").html(" ")
+          var str = "<table class='blockchain'><colgroup><col class='c1'><col class='c2'><col class='c3'><col class='c4'><col class='c5'><col class='c6'></colgroup>"
+          str += "<thead><tr><th>index</th><th>previous hash</th><th>current hash</th><th>timestamp</th><th>proof</th><th>transaction data</th></tr></thead><tbody>"
 
           for(var i=0; i<response.length; i++){
-            $("#output_area").append("index : "+response[i].index+"<br>")
-            $("#output_area").append("previous hash : "+response[i].previous_hash+"<br>")
-            $("#output_area").append("current hash : "+response[i].current_hash+"<br>")
-            $("#output_area").append("timestamp : "+response[i].time_stamp+"<br>")
-            $("#output_area").append("proof : "+response[i].proof+"<br>")
-            $("#output_area").append("transaction data : ")
-            var tx = response[i].tx_data.split(" |")
-            if(tx.length==1){$("#output_area").append("Genesis Block<br>")}
-            for(j=0; j<tx.length-1; j++){
-              txlist = tx[j].split(", ")
-              $("#output_area").append("<br>--------  transaction "+j+" --------<br>|    uuid : "+txlist[0]+"<br>")
-              $("#output_area").append("|    sender : "+txlist[1]+"<br>")
-              $("#output_area").append("|    receiver : "+txlist[3]+"<br>")
-              $("#output_area").append("|    amount : "+txlist[2]+"<br>")
-              $("#output_area").append("|    fee : "+txlist[4]+"<br>")
-            }
-
-            // $("#output_area").append("transaction data : "+response[i].tx_data+"<br>")
-            $("#output_area").append("---------------------------------------------<br><br>")
+            str += "<tr>"
+            str += "<td>" + response[i].index + "</td>"
+            str += "<td style='word-break:break-all'>" + response[i].previous_hash + "</td>"
+            str += "<td style='word-break:break-all'>" + response[i].current_hash + "</td>"
+            str += "<td>" + response[i].time_stamp + "</td>"
+            str += "<td>" + response[i].proof + "</td>"
+            str += "<td style='word-break:break-all'>" + response[i].tx_data + "</td></tr>"
           }
+          str += "</tbody></table>"
+          $("#output_area").append(str)
         },
         error:function(response, axd, axs){
           console.log(axd)
         }
       })
+
     })
 
     $("#newTxBtn").click(function(){
@@ -137,6 +181,9 @@
             "uuid":$("#span_uuid").html(),
             "signature":$("#signature").val()
         },
+        // beforeSend:function(xhr){
+        //   xhr.setRequestHeader("Content-Type","application/json");
+        // },
         success:function(response){
           console.log(response)
           $("#output_area").html(response.msg)
@@ -153,9 +200,8 @@
         url:"/checkBalance",
         dataType:"json",
         type:'POST',
-        // headers:{'Content-type':'application/json'},
         data:{
-            "sender":$("#private_key_sender").val()
+          "sender":$("#private_key_sender").val()
         },
         success:function(response){
           console.log(response)
@@ -175,7 +221,7 @@
         dataType:"json",
         type:'POST',
         data:{
-            "miner":$("#private_key_sender").val()
+          "miner":$("#private_key_sender").val()
         },
         success:function(response){
           console.log(response)
@@ -189,7 +235,7 @@
 
 
     $("#prvKeygenBtn").click(function(){
-
+      alert("개인키는 반드시 복사해서 잘 보관해주세요.")
       $.ajax({
         url:"/getPrivateKey",
         dataType:"text",

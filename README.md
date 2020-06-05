@@ -104,7 +104,7 @@
 • 전자서명
   - RSA 암호화 방식을 통한 비트코인 전자서명 구현
   - 비트코인 거래 시 송금자가 송금자의 개인키로 전자서명 후 송금자의 공개키로 거래 유효성 검증
-<img scr="https://user-images.githubusercontent.com/62678386/83839466-1d030b00-a737-11ea-899e-049bdd902cf6.PNG" />
+<img scr="https://user-images.githubusercontent.com/62678386/83839466-1d030b00-a737-11ea-899e-049bdd902cf6.PNG">
 
 ## 보완사항
 • merkle root 구현

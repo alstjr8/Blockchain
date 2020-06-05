@@ -27,11 +27,19 @@
 ## 개발 환경
 • 운영체제: Window 10
 
-• 개발언어
-  - Pycharm
-  - MySQL
-  - Flask
-  - JavaScript
+-python 3.7
+module
+pip install requests
+pip install flask
+pip install jupyter
+pip install sqlalchemy
+
+-postgresql 10.12
+
+-Flask 1.1
+-node.js v12.16.3
+module
+$npm install express
 
 ## 코드 리팩토링
 • 클래스화

@@ -6,8 +6,6 @@
 
 ## 개요
 
-<img src="https://user-images.githubusercontent.com/62678705/83835549-06a38200-a72c-11ea-9bff-b3d489bcdf9f.png" width="90%"></img>
-
 • 전체 구성 
 
 • 개발 환경
@@ -25,7 +23,7 @@
 
 • Flask를 통한 Rest API 서버 구축
 
-그림 추가
+<img src="https://user-images.githubusercontent.com/62678705/83835549-06a38200-a72c-11ea-9bff-b3d489bcdf9f.png" width="90%"></img>
 ## 개발 환경
 • 운영체제: Window 10
 

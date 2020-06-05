@@ -5,6 +5,9 @@
 • ToyProject용 블록체인 기본 로직 리팩토링 및 추가 구현
 
 ## 개요
+
+https://user-images.githubusercontent.com/62678705/83835549-06a38200-a72c-11ea-9bff-b3d489bcdf9f.png
+
 • 전체 구성 
 
 • 개발 환경
